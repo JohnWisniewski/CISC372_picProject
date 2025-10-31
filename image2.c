@@ -3,8 +3,7 @@
 #include <time.h>
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
-#include <unistd.h>   // for sysconf
+#include <omp.h>
 #include "image.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -13,24 +12,25 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-// ---- helpers ----
+// ---- optional helper to keep values in [0,255] ----
 static inline uint8_t clamp_u8(double v) {
     if (v < 0.0) return 0;
     if (v > 255.0) return 255;
-    return (uint8_t)(v + 0.5); // round to nearest
+    return (uint8_t)(v + 0.5);
 }
 
 // An array of kernel matrices to be used for image convolution.
 // The indexes match the enumeration from the header file.
-static double algorithms[][3][3] = {
+Matrix algorithms[] = {
     { { 0,-1, 0},{-1, 4,-1},{ 0,-1, 0} },           // EDGE
     { { 0,-1, 0},{-1, 5,-1},{ 0,-1, 0} },           // SHARPEN
     { {1/9.0,1/9.0,1/9.0},{1/9.0,1/9.0,1/9.0},{1/9.0,1/9.0,1/9.0} }, // BLUR
-    { {1.0/16,1.0/8,1.0/16},{1.0/8,1.0/4,1.0/8},{1.0/16,1.0/8,1.0/16} }, // GAUSE_BLUR (Gaussian 3x3)
+    { {1.0/16,1.0/8,1.0/16},{1.0/8,1.0/4,1.0/8},{1.0/16,1.0/8,1.0/16} }, // GAUSE_BLUR
     { {-2,-1,0},{-1,1,1},{0,1,2} },                  // EMBOSS
     { { 0, 0, 0},{ 0, 1, 0},{ 0, 0, 0} }             // IDENTITY
 };
 
+// Compute one pixel/channel via 3x3 convolution
 uint8_t getPixelValue(Image* srcImage, int x, int y, int bit, Matrix algorithm){
     int px = x + 1, mx = x - 1, py = y + 1, my = y - 1;
     if (mx < 0) mx = 0;
@@ -51,37 +51,27 @@ uint8_t getPixelValue(Image* srcImage, int x, int y, int bit, Matrix algorithm){
     return clamp_u8(acc);
 }
 
-// ---- threaded worker ----
-typedef struct {
-    Image* src;
-    Image* dst;
-    Matrix kernel;  // now using Matrix type which includes const
-    int row_start; // inclusive
-    int row_end;   // exclusive
-} ThreadJob;
-
-void* worker(void* arg) {
-    ThreadJob* job = (ThreadJob*)arg;
-    Image* src = job->src;
-    Image* dst = job->dst;
-
-    for (int row = job->row_start; row < job->row_end; ++row) {
-        for (int x = 0; x < src->width; ++x) {
-            for (int bit = 0; bit < src->bpp; ++bit) {
-                dst->data[Index(x, row, src->width, bit, src->bpp)] =
-                    getPixelValue(src, x, row, bit, job->kernel);
+// Parallel convolution: split by rows (no overlap in writes)
+void convolute(Image* srcImage, Image* destImage, Matrix algorithm){
+    // outer loop parallelized; each thread writes disjoint rows -> no race
+    #pragma omp parallel for schedule(static)
+    for (int row = 0; row < srcImage->height; ++row){
+        for (int pix = 0; pix < srcImage->width; ++pix){
+            for (int bit = 0; bit < srcImage->bpp; ++bit){
+                destImage->data[Index(pix,row,srcImage->width,bit,srcImage->bpp)] =
+                    getPixelValue(srcImage, pix, row, bit, algorithm);
             }
         }
     }
-    return NULL;
 }
 
-// Usage helper
-int Usage(){
-    printf("Usage: image <filename> <type>\n\twhere type is one of (edge,sharpen,blur,gauss,emboss,identity)\n");
+// Usage text
+int Usage(void){
+    printf("Usage: image_openmp <filename> <type>\n\twhere type is one of (edge,sharpen,blur,gauss,emboss,identity)\n");
     return -1;
 }
 
+// Map CLI string to kernel
 enum KernelTypes GetKernelType(char* type){
     if (!strcmp(type,"edge")) return EDGE;
     else if (!strcmp(type,"sharpen")) return SHARPEN;
@@ -91,22 +81,8 @@ enum KernelTypes GetKernelType(char* type){
     else return IDENTITY;
 }
 
-// Decide thread count: THREADS env, else cores, else 4
-static int decide_thread_count(void) {
-    char* env = getenv("THREADS");
-    if (env) {
-        int t = atoi(env);
-        if (t >= 1 && t <= 1024) return t;
-    }
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (n < 1) n = 4;
-    if (n > 64) n = 64; // sanity cap
-    return (int)n;
-}
-
 int main(int argc,char** argv){
-    long t1,t2;
-    t1 = time(NULL);
+    long t1 = time(NULL);
 
     stbi_set_flip_vertically_on_load(0);
     if (argc != 3) return Usage();
@@ -124,56 +100,31 @@ int main(int argc,char** argv){
         return -1;
     }
 
-    destImage.bpp    = srcImage.bpp;
+    destImage.bpp = srcImage.bpp;
     destImage.height = srcImage.height;
-    destImage.width  = srcImage.width;
-    destImage.data   = malloc((size_t)destImage.width * destImage.height * destImage.bpp);
-    if (!destImage.data) {
+    destImage.width = srcImage.width;
+    destImage.data = malloc((size_t)destImage.width * destImage.height * destImage.bpp);
+    if (!destImage.data){
         fprintf(stderr, "Out of memory\n");
         stbi_image_free(srcImage.data);
         return -1;
     }
 
-    // ---- launch threads over disjoint row ranges ----
-    int T = decide_thread_count();
-    if (T > destImage.height) T = destImage.height; // no point having more threads than rows
+    // Run parallel convolution
+    convolute(&srcImage, &destImage, algorithms[type]);
 
-    pthread_t* tids = malloc(sizeof(pthread_t) * T);
-    ThreadJob* jobs = malloc(sizeof(ThreadJob) * T);
-    if (!tids || !jobs) {
-        fprintf(stderr, "Out of memory (threads)\n");
-        free(tids); free(jobs);
-        stbi_image_free(srcImage.data);
-        free(destImage.data);
-        return -1;
-    }
-
-    int rows = destImage.height;
-    int base = rows / T, rem = rows % T;
-    int cur = 0;
-    for (int i = 0; i < T; ++i) {
-        int take = base + (i < rem ? 1 : 0);
-        jobs[i].src = &srcImage;
-        jobs[i].dst = &destImage;
-        jobs[i].kernel = algorithms[type];  // algorithms is already const
-        jobs[i].row_start = cur;
-        jobs[i].row_end   = cur + take;
-        cur += take;
-        pthread_create(&tids[i], NULL, worker, &jobs[i]);
-    }
-
-    for (int i = 0; i < T; ++i) pthread_join(tids[i], NULL);
-    free(tids);
-    free(jobs);
-
-    // ---- write output ----
+    // Write result
     stbi_write_png("output.png", destImage.width, destImage.height, destImage.bpp,
                    destImage.data, destImage.bpp * destImage.width);
 
     stbi_image_free(srcImage.data);
     free(destImage.data);
 
-    t2 = time(NULL);
-    printf("Took %ld seconds using %d thread(s)\n", t2 - t1, T);
+    long t2 = time(NULL);
+    int threads_used = 1;
+    #ifdef _OPENMP
+    threads_used = omp_get_max_threads();
+    #endif
+    printf("Took %ld seconds with OpenMP (%d thread(s) max)\n", t2 - t1, threads_used);
     return 0;
 }

@@ -13,10 +13,10 @@ typedef struct{
 
 enum KernelTypes{EDGE=0,SHARPEN=1,BLUR=2,GAUSE_BLUR=3,EMBOSS=4,IDENTITY=5};
 
-typedef double Matrix[3][3];
+typedef const double (*Matrix)[3];
 
-uint8_t getPixelValue(Image* srcImage,int x,int y,int bit,Matrix algorithm);
-void convolute(Image* srcImage,Image* destImage,Matrix algorithm);
+uint8_t getPixelValue(Image* srcImage, int x, int y, int bit, Matrix algorithm);
+void convolute(Image* srcImage, Image* destImage, Matrix algorithm);
 int Usage();
 enum KernelTypes GetKernelType(char* type);
 
