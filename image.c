@@ -153,11 +153,11 @@ int main(int argc,char** argv){
     int cur = 0;
     for (int i = 0; i < T; ++i) {
         int take = base + (i < rem ? 1 : 0);
-        jobs[i].src = &srcImage;
-        jobs[i].dst = &destImage;
-        jobs[i].kernel = algorithms[type];  // algorithms is already const
-        jobs[i].row_start = cur;
-        jobs[i].row_end   = cur + take;
+    jobs[i].src = &srcImage;
+    jobs[i].dst = &destImage;
+    jobs[i].kernel = &algorithms[type][0];
+    jobs[i].row_start = cur;
+    jobs[i].row_end   = cur + take;
         cur += take;
         pthread_create(&tids[i], NULL, worker, &jobs[i]);
     }
