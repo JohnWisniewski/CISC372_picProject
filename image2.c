@@ -21,7 +21,7 @@ static inline uint8_t clamp_u8(double v) {
 
 // An array of kernel matrices to be used for image convolution.
 // The indexes match the enumeration from the header file.
-Matrix algorithms[][3][3] = {
+static const double algorithms[][3][3] = {
     { { 0,-1, 0},{-1, 4,-1},{ 0,-1, 0} },           // EDGE
     { { 0,-1, 0},{-1, 5,-1},{ 0,-1, 0} },           // SHARPEN
     { {1/9.0,1/9.0,1/9.0},{1/9.0,1/9.0,1/9.0},{1/9.0,1/9.0,1/9.0} }, // BLUR
@@ -111,7 +111,7 @@ int main(int argc,char** argv){
     }
 
     // Run parallel convolution
-    convolute(&srcImage, &destImage, algorithms[type]);
+    convolute(&srcImage, &destImage, &algorithms[type][0]);
 
     // Write result
     stbi_write_png("output.png", destImage.width, destImage.height, destImage.bpp,
