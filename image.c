@@ -22,7 +22,7 @@ static inline uint8_t clamp_u8(double v) {
 
 // An array of kernel matrices to be used for image convolution.
 // The indexes match the enumeration from the header file.
-static double algorithms[][3][3] = {
+static const double algorithms[][3][3] = {
     { { 0,-1, 0},{-1, 4,-1},{ 0,-1, 0} },           // EDGE
     { { 0,-1, 0},{-1, 5,-1},{ 0,-1, 0} },           // SHARPEN
     { {1/9.0,1/9.0,1/9.0},{1/9.0,1/9.0,1/9.0},{1/9.0,1/9.0,1/9.0} }, // BLUR
